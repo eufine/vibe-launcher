@@ -2,6 +2,11 @@ vibe-launcher/.gradle/
 vibe-launcher/build/
 vibe-launcher/app/build/
 vibe-launcher/local.properties
+# signing material never enters the repo
+*.jks
+*.keystore
+*.jks.b64
+.release-credentials.txt
 # your own TV's dumps (serial, android_id, device names) stay local
 backup/
 .DS_Store

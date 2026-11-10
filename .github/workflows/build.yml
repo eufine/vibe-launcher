@@ -1,0 +1,159 @@
+name: Fork release
+
+# Builds my patched fork whenever upstream publishes a release, and publishes
+# the result as a release of this repository with the same tag, so the
+# in-app updater (patched to point here) sees it.
+
+on:
+  schedule:
+    - cron: '23 4 * * *'   # daily, UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: maydings/vibe-launcher
+  ANDROID_COMPILE_SDK: android-35
+  ANDROID_BUILD_TOOLS: '35.0.0'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this fork's patch material
+        uses: actions/checkout@v4
+
+      - name: Compare upstream's latest release with this fork's
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream=$(gh api "repos/$UPSTREAM_REPO/releases/latest")
+          tag=$(jq -r '.tag_name // empty' <<<"$upstream")
+          if [ -z "$tag" ]; then
+            echo "No latest upstream release found" >&2
+            exit 1
+          fi
+          jq -r '.body // ""' <<<"$upstream" > "$RUNNER_TEMP/notes.md"
+
+          # A fork with no releases yet: gh api exits non-zero on the 404.
+          fork='{}'
+          if mine=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" 2>/dev/null); then
+            fork=$mine
+          fi
+          mytag=$(jq -r '.tag_name // empty' <<<"$fork")
+          hasapk=$(jq -r '[.assets[]?.name] | if index("vibe-launcher.apk") then "yes" else "no" end' <<<"$fork")
+
+          echo "upstream tag: $tag; fork tag: ${mytag:-none}; fork APK present: $hasapk"
+          if [ "$tag" = "$mytag" ] && [ "$hasapk" = yes ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the upstream release tag
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.check.outputs.tag }}" \
+            "https://github.com/$UPSTREAM_REPO.git" src
+
+      - name: Set up JDK 17
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up the Android SDK
+        if: steps.check.outputs.skip != 'true'
+        uses: android-actions/setup-android@v3
+
+      - name: Install the Android platform and build tools
+        if: steps.check.outputs.skip != 'true'
+        run: sdkmanager --install "platforms;$ANDROID_COMPILE_SDK" "build-tools;$ANDROID_BUILD_TOOLS"
+
+      - name: Patch, build and sign
+        if: steps.check.outputs.skip != 'true'
+        env:
+          REPO: ${{ github.repository }}
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${KEYSTORE_B64:?add the KEYSTORE_B64 secret}"
+          : "${KEYSTORE_PASSWORD:?add the KEYSTORE_PASSWORD secret}"
+          : "${KEY_ALIAS:?add the KEY_ALIAS secret}"
+          # KEY_PASSWORD is optional: when the key password equals the store
+          # password (the usual keytool default), leave the secret unset.
+          KEY_PASSWORD=${KEY_PASSWORD:-$KEYSTORE_PASSWORD}
+
+          KS="$RUNNER_TEMP/release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          CERT=$(keytool -J-Duser.language=en -list -v -keystore "$KS" \
+                   -alias "$KEY_ALIAS" -storepass "$KEYSTORE_PASSWORD" \
+                 | sed -n 's/^[[:space:]]*SHA256: //p' | head -n1 \
+                 | tr -d ':' | tr 'A-F' 'a-f')
+          printf '%s\n' "$CERT" | grep -Eq '^[0-9a-f]{64}$' || {
+            echo "Could not read a 64-hex SHA-256 fingerprint for alias '$KEY_ALIAS'" >&2
+            exit 1
+          }
+          echo "Signing certificate SHA-256: $CERT"
+
+          # The patch script expects to run from the checkout root.
+          ( cd src && REPO="$REPO" CERT="$CERT" sh "$GITHUB_WORKSPACE/apply-patches.sh" )
+
+          ( cd src/vibe-launcher && ./gradlew assembleAdbRelease --no-daemon --console=plain )
+
+          APKDIR=src/vibe-launcher/app/build/outputs/apk/adb/release
+          UNSIGNED=$APKDIR/app-adb-release-unsigned.apk
+          [ -f "$UNSIGNED" ] || UNSIGNED=$APKDIR/app-adb-release.apk
+          if [ ! -f "$UNSIGNED" ]; then
+            echo "No release APK found in $APKDIR:" >&2
+            ls -la "$APKDIR" >&2 || true
+            exit 1
+          fi
+
+          SDK=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}
+          BT="$SDK/build-tools/$ANDROID_BUILD_TOOLS"
+          "$BT/zipalign" -p -f 4 "$UNSIGNED" "$RUNNER_TEMP/aligned.apk"
+
+          # Pass passwords through the environment, not argv.
+          export KS_PASS="$KEYSTORE_PASSWORD" KEY_PASS="$KEY_PASSWORD"
+          "$BT/apksigner" sign --ks "$KS" --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
+            --out "$GITHUB_WORKSPACE/vibe-launcher.apk" "$RUNNER_TEMP/aligned.apk"
+
+          "$BT/apksigner" verify --print-certs "$GITHUB_WORKSPACE/vibe-launcher.apk" \
+            | tee "$RUNNER_TEMP/certs.txt"
+          grep -Fqi "certificate SHA-256 digest: $CERT" "$RUNNER_TEMP/certs.txt" || {
+            echo "The APK was signed with a certificate other than $CERT" >&2
+            exit 1
+          }
+
+      - name: Publish the fork release
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A previous run may have stopped before uploading the asset.
+            gh release upload "$TAG" vibe-launcher.apk \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" vibe-launcher.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
