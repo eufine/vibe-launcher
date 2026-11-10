@@ -72,13 +72,18 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up the Android SDK
-        if: steps.check.outputs.skip != 'true'
-        uses: android-actions/setup-android@v3
-
       - name: Install the Android platform and build tools
         if: steps.check.outputs.skip != 'true'
-        run: sdkmanager --install "platforms;$ANDROID_COMPILE_SDK" "build-tools;$ANDROID_BUILD_TOOLS"
+        run: |
+          set -euo pipefail
+          SDK=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}
+          SDKM=$(find "$SDK/cmdline-tools" -maxdepth 3 -type f -name sdkmanager | sort | tail -n1)
+          if [ -z "$SDKM" ]; then
+            echo "sdkmanager not found under $SDK" >&2
+            exit 1
+          fi
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" --install "platforms;$ANDROID_COMPILE_SDK" "build-tools;$ANDROID_BUILD_TOOLS"
 
       - name: Patch, build and sign
         if: steps.check.outputs.skip != 'true'
