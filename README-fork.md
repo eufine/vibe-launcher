@@ -13,6 +13,19 @@ Actions workflow in `.github/workflows/build.yml` does this daily, builds the
 `adb` release, signs it, and publishes it here with upstream's tag and release
 notes.
 
+## Current status of this fork
+
+- A dedicated signing key was generated on 2026-11-10, and the
+  `KEYSTORE_B64`, `KEYSTORE_PASSWORD` and `KEY_ALIAS` Actions secrets are set.
+  The store and key passwords are the same, so `KEY_PASSWORD` is not needed.
+- The keystore is `release.jks` in the repository root and the credentials are
+  in `.release-credentials.txt`. Both are gitignored. **Back them up now**:
+  without this exact key, no later release can update an installed copy.
+- `v4.0.8` was built and published by the workflow. Further runs skip while
+  upstream stays on that tag.
+
+The setup below is what a fresh fork needs.
+
 ## One-time setup
 
 ### 1. Generate a signing key (once, and keep it forever)
@@ -125,6 +138,6 @@ with `Outfit-Medium.ttf` (500) and rerun the workflow. See
 
 ## What still needs a human
 
-- The signing key and secrets above.
-- Deciding whether the key password differs from the store password.
-- Installing the first fork APK (uninstall upstream first).
+- Back up `release.jks` and `.release-credentials.txt` somewhere safe.
+- Install the first fork APK, uninstalling upstream first because the
+  signatures differ.
