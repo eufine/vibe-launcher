@@ -1,0 +1,163 @@
+name: Manual Asset Rebuild
+
+on:
+  workflow_dispatch:
+    inputs:
+      custom_tag:
+        description: 'Optional exact release tag (leave blank to auto-bump -r1, -r2, etc.)'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: maydings/vibe-launcher
+  ANDROID_COMPILE_SDK: android-35
+  ANDROID_BUILD_TOOLS: '35.0.0'
+
+jobs:
+  manual-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this fork's patch material
+        uses: actions/checkout@v5
+
+      - name: Determine upstream base tag and bumped release tag
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CUSTOM_TAG: ${{ github.event.inputs.custom_tag }}
+        run: |
+          set -euo pipefail
+          upstream=$(gh api "repos/$UPSTREAM_REPO/releases/latest")
+          base_tag=$(jq -r '.tag_name // empty' <<<"$upstream")
+          if [ -z "$base_tag" ]; then
+            echo "No latest upstream release found" >&2
+            exit 1
+          fi
+
+          # Check current latest release on your fork to auto-increment -rN
+          fork='{}'
+          if mine=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" 2>/dev/null); then
+            fork=$mine
+          fi
+          mytag=$(jq -r '.tag_name // empty' <<<"$fork")
+
+          if [ -n "$CUSTOM_TAG" ]; then
+            new_tag="$CUSTOM_TAG"
+          elif [[ "$mytag" =~ ^${base_tag}-r([0-9]+)$ ]]; then
+            next_num=$(( ${BASH_REMATCH[1]} + 1 ))
+            new_tag="${base_tag}-r${next_num}"
+          else
+            new_tag="${base_tag}-r1"
+          fi
+
+          {
+            echo "Manual rebuild of upstream **$base_tag** with updated fork assets."
+            echo ""
+            jq -r '.body // ""' <<<"$upstream"
+          } > "$RUNNER_TEMP/notes.md"
+
+          echo "Upstream tag: $base_tag | New release tag: $new_tag"
+          echo "base_tag=$base_tag" >> "$GITHUB_OUTPUT"
+          echo "tag=$new_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the upstream release tag
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${{ steps.version.outputs.base_tag }}" \
+            "https://github.com" src
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install the Android platform and build tools
+        run: |
+          set -euo pipefail
+          SDK=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}
+          SDKM=$(find "$SDK/cmdline-tools" -maxdepth 3 -type f -name sdkmanager | sort | tail -n1)
+          if [ -z "$SDKM" ]; then
+            echo "sdkmanager not found under $SDK" >&2
+            exit 1
+          fi
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" --install "platforms;$ANDROID_COMPILE_SDK" "build-tools;$ANDROID_BUILD_TOOLS"
+
+      - name: Patch, build and sign
+        env:
+          REPO: ${{ github.repository }}
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${KEYSTORE_B64:?add the KEYSTORE_B64 secret}"
+          : "${KEYSTORE_PASSWORD:?add the KEYSTORE_PASSWORD secret}"
+          : "${KEY_ALIAS:?add the KEY_ALIAS secret}"
+          KEY_PASSWORD=${KEY_PASSWORD:-$KEYSTORE_PASSWORD}
+
+          KS="$RUNNER_TEMP/release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
+          CERT=$(keytool -J-Duser.language=en -list -v -keystore "$KS" \
+                   -alias "$KEY_ALIAS" -storepass "$KEYSTORE_PASSWORD" \
+
+                 | sed -n 's/^[[:space:]]*SHA256: //p' | head -n1 \
+                 | tr -d ':' | tr 'A-F' 'a-f')
+          printf '%s\n' "$CERT" | grep -Eq '^[0-9a-f]{64}$' || {
+            echo "Could not read a 64-hex SHA-256 fingerprint for alias '$KEY_ALIAS'" >&2
+            exit 1
+          }
+
+          ( cd src && REPO="$REPO" CERT="$CERT" sh "$GITHUB_WORKSPACE/apply-patches.sh" )
+
+          ( cd src/vibe-launcher && ./gradlew assembleAdbRelease --no-daemon --console=plain )
+
+          APKDIR=src/vibe-launcher/app/build/outputs/apk/adb/release
+          UNSIGNED=$APKDIR/app-adb-release-unsigned.apk
+          [ -f "$UNSIGNED" ] || UNSIGNED=$APKDIR/app-adb-release.apk
+          if [ ! -f "$UNSIGNED" ]; then
+            echo "No release APK found in $APKDIR:" >&2
+            ls -la "$APKDIR" >&2 || true
+            exit 1
+          fi
+
+          SDK=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}
+          BT="$SDK/build-tools/$ANDROID_BUILD_TOOLS"
+          "$BT/zipalign" -p -f 4 "$UNSIGNED" "$RUNNER_TEMP/aligned.apk"
+
+          export KS_PASS="$KEYSTORE_PASSWORD" KEY_PASS="$KEY_PASSWORD"
+          "$BT/apksigner" sign --ks "$KS" --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
+            --out "$GITHUB_WORKSPACE/vibe-launcher.apk" "$RUNNER_TEMP/aligned.apk"
+
+          "$BT/apksigner" verify --print-certs "$GITHUB_WORKSPACE/vibe-launcher.apk" \
+            | tee "$RUNNER_TEMP/certs.txt"
+          grep -Fqi "certificate SHA-256 digest: $CERT" "$RUNNER_TEMP/certs.txt" || {
+            echo "The APK was signed with a certificate other than $CERT" >&2
+            exit 1
+          }
+
+      - name: Publish the manual rebuild release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" vibe-launcher.apk \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" vibe-launcher.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
