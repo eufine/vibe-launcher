@@ -90,7 +90,6 @@ jobs:
           printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KS"
           CERT=$(keytool -J-Duser.language=en -list -v -keystore "$KS" \
                    -alias "$KEY_ALIAS" -storepass "$KEYSTORE_PASSWORD" \
-
                  | sed -n 's/^[[:space:]]*SHA256: //p' | head -n1 \
                  | tr -d ':' | tr 'A-F' 'a-f')
           printf '%s\n' "$CERT" | grep -Eq '^[0-9a-f]{64}$' || {
