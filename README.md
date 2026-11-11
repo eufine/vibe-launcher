@@ -1,7 +1,7 @@
 # Vibe Launcher
 
 Fork of maydings/vibe-launcher because the font choice by the author is difficult to read on my TV. 
-I replace it with Roboto Condensed (Thin for body text, SemiBold for headings). No other changes. Builds are automated.
+I replace it with Roboto Condensed (Light for body text, SemiBold for headings). No other changes. Builds are automated.
 
 ## Licence
 

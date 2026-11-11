@@ -3,7 +3,7 @@
 This fork rebuilds upstream [maydings/vibe-launcher](https://github.com/maydings/vibe-launcher)
 releases with two changes:
 
-- **UI font:** Roboto Condensed — Thin for body text and SemiBold for
+- **UI font:** Roboto Condensed — Light for body text and SemiBold for
   headings — instead of the variable Outfit whose default instance is Thin.
 - **Updater:** the in-app updater checks this fork's GitHub releases and
   accepts APKs signed with my certificate.
@@ -158,7 +158,7 @@ The bundled files are static instances of
 [Roboto Condensed](https://fonts.google.com/specimen/Roboto+Condensed)
 (from the [Google Fonts repository](https://github.com/google/fonts/tree/main/ofl/robotocondensed)):
 
-- `patches/fonts/ui_body.ttf` — Roboto Condensed **Thin**, used for body text
+- `patches/fonts/ui_body.ttf` — Roboto Condensed **Light**, used for body text
 - `patches/fonts/ui_heading.ttf` — Roboto Condensed **SemiBold**, used for headings
 
 Roboto Condensed is under the SIL Open Font License 1.1. To swap either role,

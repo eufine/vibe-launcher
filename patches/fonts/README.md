@@ -6,11 +6,11 @@
 
 | File | Role | Instance | `usWeightClass` |
 |---|---|---|---|
-| `ui_body.ttf` | `font_regular` — body text | Roboto Condensed Thin | 250 |
+| `ui_body.ttf` | `font_regular` — body text | Roboto Condensed Light | 300 |
 | `ui_heading.ttf` | `font_medium` — headings | Roboto Condensed SemiBold | 600 |
 
 They are static fonts (no `fvar` table), so Android picks the named weight
-directly instead of falling back to the variable font's Thin default.
+directly instead of falling back to a variable font's default instance.
 
 To change a role, download the desired static `.ttf` from Google Fonts,
 overwrite the matching file here, commit, and run the manual rebuild workflow
