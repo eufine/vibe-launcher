@@ -49,9 +49,13 @@ jobs:
           fi
           mytag=$(jq -r '.tag_name // empty' <<<"$fork")
           hasapk=$(jq -r '[.assets[]?.name] | if index("vibe-launcher.apk") then "yes" else "no" end' <<<"$fork")
+          # Manual rebuilds add a -rN suffix to the latest tag. Compare the
+          # upstream tag with the base version so a v4.0.8-r1 rebuild still
+          # counts as v4.0.8 and does not make this run rebuild it every day.
+          mybase=${mytag%-r[0-9]*}
 
-          echo "upstream tag: $tag; fork tag: ${mytag:-none}; fork APK present: $hasapk"
-          if [ "$tag" = "$mytag" ] && [ "$hasapk" = yes ]; then
+          echo "upstream tag: $tag; fork tag: ${mytag:-none}; base: ${mybase:-none}; fork APK present: $hasapk"
+          if [ "$tag" = "$mybase" ] && [ "$hasapk" = yes ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"

@@ -3,8 +3,8 @@
 This fork rebuilds upstream [maydings/vibe-launcher](https://github.com/maydings/vibe-launcher)
 releases with two changes:
 
-- **UI font:** static Outfit SemiBold (body) and Bold (headings), instead of
-  the variable Outfit whose default instance is Thin.
+- **UI font:** Roboto Condensed — Thin for body text and SemiBold for
+  headings — instead of the variable Outfit whose default instance is Thin.
 - **Updater:** the in-app updater checks this fork's GitHub releases and
   accepts APKs signed with my certificate.
 
@@ -21,8 +21,9 @@ notes.
 - The keystore is `release.jks` in the repository root and the credentials are
   in `.release-credentials.txt`. Both are gitignored. **Back them up now**:
   without this exact key, no later release can update an installed copy.
-- `v4.0.8` was built and published by the workflow. Further runs skip while
-  upstream stays on that tag.
+- `v4.0.8` was built and published by the workflow. `v4.0.8-r1` was then
+  built manually with the Roboto Condensed fonts and installed over it.
+  Further runs skip while upstream stays on the same base tag.
 
 The setup below is what a fresh fork needs.
 
@@ -98,11 +99,12 @@ adb install -r -g vibe-launcher.apk
 After that, later fork releases install over it normally, and the in-app
 updater works.
 
-## How the workflow behaves
+## How the automatic workflow behaves
 
 - Runs daily at 04:23 UTC and on demand.
-- Reads upstream's `/releases/latest`; skips when this fork already has a
-  release with the same tag **and** the `vibe-launcher.apk` asset.
+- Reads upstream's `/releases/latest`; skips when this fork's latest release
+  has the same base tag (ignoring any `-rN` suffix) **and** the
+  `vibe-launcher.apk` asset.
 - Builds the `adb` flavor: `assembleAdbRelease` (JDK 17, AGP 8.7.3, Gradle 8.9).
 - Signs unsigned output with `apksigner`, verifies the certificate matches the
   one baked into the updater, and names the asset exactly `vibe-launcher.apk`.
@@ -112,6 +114,32 @@ updater works.
 The tag and asset name are requirements, not cosmetics: `Updater.java` reads
 `tag_name`, looks for an asset named `vibe-launcher.apk`, and verifies the
 asset's GitHub `sha256:` digest.
+
+## Manual rebuild (font or other fork-only change)
+
+The automatic workflow skips a tag it has already published. To rebuild the
+current source without waiting for an upstream release, use the manual
+workflow on this branch:
+
+```sh
+# after committing the change to fontpatch
+gh workflow run manual-rebuild.yml --repo eufine/vibe-launcher --ref fontpatch
+```
+
+It checks out the branch, patches it, builds and signs it, and publishes the
+APK under an auto-bumped tag: the first run makes `v4.0.8-r1`, the next
+`v4.0.8-r2`, and so on. Pass `-f custom_tag=v4.0.8-r7` to choose the tag.
+
+```sh
+gh release download v4.0.8-r1 --repo eufine/vibe-launcher \
+  --pattern vibe-launcher.apk --clobber
+adb install -r -g vibe-launcher.apk
+```
+
+A `-rN` tag is **not** offered by the in-app updater: the APK still reports
+`versionName=4.0.8`, so the updater sees it as the same version. Install a
+manual rebuild over ADB; this preserves app data because the signing key is
+unchanged. In-app updates continue to work normally for new upstream versions.
 
 ## Patching a checkout by hand
 
@@ -126,15 +154,17 @@ upstream's text no longer matches what it expects.
 
 ## Fonts
 
-The bundled files are the official static Outfit instances:
+The bundled files are static instances of
+[Roboto Condensed](https://fonts.google.com/specimen/Roboto+Condensed)
+(from the [Google Fonts repository](https://github.com/google/fonts/tree/main/ofl/robotocondensed)):
 
-- `patches/fonts/ui_body.ttf` — [Outfit-SemiBold.ttf](https://github.com/Outfitio/Outfit-Fonts/blob/main/fonts/ttf/Outfit-SemiBold.ttf), weight 600
-- `patches/fonts/ui_heading.ttf` — [Outfit-Bold.ttf](https://github.com/Outfitio/Outfit-Fonts/blob/main/fonts/ttf/Outfit-Bold.ttf), weight 700
+- `patches/fonts/ui_body.ttf` — Roboto Condensed **Thin**, used for body text
+- `patches/fonts/ui_heading.ttf` — Roboto Condensed **SemiBold**, used for headings
 
-Outfit is under the SIL Open Font License 1.1; `vibe-launcher/FONT-LICENSE-OFL.txt`
-already carries it. If SemiBold looks too heavy on the TV, replace `ui_body.ttf`
-with `Outfit-Medium.ttf` (500) and rerun the workflow. See
-`patches/fonts/README.md`.
+Roboto Condensed is under the SIL Open Font License 1.1. To swap either role,
+replace the corresponding `.ttf`, commit, and run the manual rebuild workflow
+above; `apply-patches.sh` copies both files and repoints `fonts.xml`, so no
+Java or layout change is needed. See `patches/fonts/README.md`.
 
 ## What still needs a human
 
