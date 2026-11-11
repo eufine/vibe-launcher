@@ -1,4 +1,4 @@
-name: Manual Asset Rebuild
+name: Manual Fork Rebuild
 
 on:
   workflow_dispatch:
@@ -16,7 +16,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  UPSTREAM_REPO: maydings/vibe-launcher
   ANDROID_COMPILE_SDK: android-35
   ANDROID_BUILD_TOOLS: '35.0.0'
 
@@ -24,24 +23,16 @@ jobs:
   manual-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out this fork's patch material
+      - name: Check out this repository
         uses: actions/checkout@v5
 
-      - name: Determine upstream base tag and bumped release tag
+      - name: Determine bumped release tag from this fork
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
           CUSTOM_TAG: ${{ github.event.inputs.custom_tag }}
         run: |
           set -euo pipefail
-          upstream=$(gh api "repos/$UPSTREAM_REPO/releases/latest")
-          base_tag=$(jq -r '.tag_name // empty' <<<"$upstream")
-          if [ -z "$base_tag" ]; then
-            echo "No latest upstream release found" >&2
-            exit 1
-          fi
-
-          # Check current latest release on your fork to auto-increment -rN
           fork='{}'
           if mine=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" 2>/dev/null); then
             fork=$mine
@@ -50,28 +41,18 @@ jobs:
 
           if [ -n "$CUSTOM_TAG" ]; then
             new_tag="$CUSTOM_TAG"
-          elif [[ "$mytag" =~ ^${base_tag}-r([0-9]+)$ ]]; then
-            next_num=$(( ${BASH_REMATCH[1]} + 1 ))
-            new_tag="${base_tag}-r${next_num}"
+          elif [[ "$mytag" =~ ^(.+)-r([0-9]+)$ ]]; then
+            base="${BASH_REMATCH[1]}"
+            next_num=$(( ${BASH_REMATCH[2]} + 1 ))
+            new_tag="${base}-r${next_num}"
+          elif [ -n "$mytag" ]; then
+            new_tag="${mytag}-r1"
           else
-            new_tag="${base_tag}-r1"
+            new_tag="v1.0.0-r1"
           fi
 
-          {
-            echo "Manual rebuild of upstream **$base_tag** with updated fork assets."
-            echo ""
-            jq -r '.body // ""' <<<"$upstream"
-          } > "$RUNNER_TEMP/notes.md"
-
-          echo "Upstream tag: $base_tag | New release tag: $new_tag"
-          echo "base_tag=$base_tag" >> "$GITHUB_OUTPUT"
+          echo "Current fork tag: ${mytag:-none} | New release tag: $new_tag"
           echo "tag=$new_tag" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the upstream release tag
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch "${{ steps.version.outputs.base_tag }}" \
-            "https://github.com" src
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -91,7 +72,7 @@ jobs:
           yes | "$SDKM" --licenses >/dev/null || true
           "$SDKM" --install "platforms;$ANDROID_COMPILE_SDK" "build-tools;$ANDROID_BUILD_TOOLS"
 
-      - name: Patch, build and sign
+      - name: Build and sign APK
         env:
           REPO: ${{ github.repository }}
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
@@ -117,11 +98,21 @@ jobs:
             exit 1
           }
 
-          ( cd src && REPO="$REPO" CERT="$CERT" sh "$GITHUB_WORKSPACE/apply-patches.sh" )
+          # Run apply-patches.sh only if it exists in your repo root
+          if [ -f "$GITHUB_WORKSPACE/apply-patches.sh" ]; then
+            REPO="$REPO" CERT="$CERT" sh "$GITHUB_WORKSPACE/apply-patches.sh"
+          fi
 
-          ( cd src/vibe-launcher && ./gradlew assembleAdbRelease --no-daemon --console=plain )
+          # Locate gradlew whether it is in ./vibe-launcher or the repo root
+          if [ -d "vibe-launcher" ]; then
+            PROJECT_DIR="vibe-launcher"
+          else
+            PROJECT_DIR="."
+          fi
 
-          APKDIR=src/vibe-launcher/app/build/outputs/apk/adb/release
+          ( cd "$PROJECT_DIR" && ./gradlew assembleAdbRelease --no-daemon --console=plain )
+
+          APKDIR="$PROJECT_DIR/app/build/outputs/apk/adb/release"
           UNSIGNED=$APKDIR/app-adb-release-unsigned.apk
           [ -f "$UNSIGNED" ] || UNSIGNED=$APKDIR/app-adb-release.apk
           if [ ! -f "$UNSIGNED" ]; then
@@ -159,5 +150,5 @@ jobs:
             gh release create "$TAG" vibe-launcher.apk \
               --repo "$GITHUB_REPOSITORY" \
               --title "$TAG" \
-              --notes-file "$RUNNER_TEMP/notes.md"
+              --notes "Manual fork rebuild ($TAG)."
           fi
