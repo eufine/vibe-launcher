@@ -22,8 +22,9 @@ notes.
   in `.release-credentials.txt`. Both are gitignored. **Back them up now**:
   without this exact key, no later release can update an installed copy.
 - `v4.0.8` was built and published by the workflow. `v4.0.8-r1` was then
-  built manually with the Roboto Condensed fonts and installed over it.
-  Further runs skip while upstream stays on the same base tag.
+  built manually with Roboto Condensed Thin, and `v4.0.8-r2` with Roboto
+  Condensed Light for body text; both were installed over it. Further runs
+  skip while upstream stays on the same base tag.
 
 The setup below is what a fresh fork needs.
 
